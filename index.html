@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Router CDC w Go: binlogi MySQL przez Bento na wiele sinków</title>
+<meta name="description" content="Jak z go-mysql i Bento złożyć router CDC, który czyta binlog MySQL i rozsyła zmiany na trzy różne sinki, każdy z własnym filtrem.">
+<meta property="og:title" content="Router CDC w Go: binlogi MySQL przez Bento na wiele sinków">
+<meta property="og:description" content="Jak z go-mysql i Bento złożyć router CDC, który czyta binlog MySQL i rozsyła zmiany na trzy różne sinki, każdy z własnym filtrem.">
+<meta property="og:type" content="article">
+<style>
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --fg: #1c1b19;
+  --muted: #65635d;
+  --rule: #e4e1d9;
+  --accent: #9a3412;
+  --accent-soft: #fdf0e7;
+  --code-bg: #f5f3ee;
+  --shadow: 0 1px 2px rgba(28,27,25,.06), 0 8px 24px rgba(28,27,25,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14151a;
+    --surface: #1a1c22;
+    --fg: #e6e4df;
+    --muted: #9a978f;
+    --rule: #2b2e36;
+    --accent: #f0a06a;
+    --accent-soft: #241a14;
+    --code-bg: #15171c;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14151a;
+  --surface: #1a1c22;
+  --fg: #e6e4df;
+  --muted: #9a978f;
+  --rule: #2b2e36;
+  --accent: #f0a06a;
+  --accent-soft: #241a14;
+  --code-bg: #15171c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 2rem; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 17px/1.68 ui-serif, Charter, "Iowan Old Style", Georgia, serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap {
+  max-width: min(100% - 2.5rem, 46rem);
+  margin: 0 auto;
+  padding: 3.5rem 0 6rem;
+}
+
+header.masthead { border-bottom: 1px solid var(--rule); padding-bottom: 2rem; margin-bottom: 2.5rem; }
+.kicker {
+  font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+  margin-bottom: 1.1rem;
+}
+h1 { font-size: clamp(2rem, 1.3rem + 2.6vw, 2.9rem); line-height: 1.14; margin: 0 0 1rem; letter-spacing: -.02em; }
+.lede { color: var(--muted); font-size: 1.12rem; line-height: 1.6; margin: 0; max-width: 38rem; }
+
+nav.toc {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 1.1rem 1.3rem; margin: 0 0 3rem; box-shadow: var(--shadow);
+}
+nav.toc strong {
+  display: block; font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: .85rem;
+}
+nav.toc a {
+  display: block; padding: .22rem 0; color: var(--fg); text-decoration: none;
+  font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
+  border-left: 2px solid transparent; padding-left: .7rem; transition: border-color .15s, color .15s;
+}
+nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+nav.toc a.lvl3 { padding-left: 1.7rem; font-size: 14px; color: var(--muted); }
+
+h2 {
+  font-size: 1.6rem; line-height: 1.22; letter-spacing: -.015em;
+  margin: 3.4rem 0 1rem; padding-top: 1.4rem; border-top: 1px solid var(--rule);
+}
+h3 { font-size: 1.18rem; line-height: 1.3; margin: 2.3rem 0 .8rem; }
+h2:first-of-type { border-top: none; padding-top: 0; }
+
+p { margin: 0 0 1.15rem; }
+ul { margin: 0 0 1.35rem; padding-left: 1.25rem; }
+li { margin-bottom: .55rem; }
+strong { font-weight: 650; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+code {
+  font: 0.88em/1.5 ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  background: var(--accent-soft); padding: .12em .38em; border-radius: 4px;
+  overflow-wrap: break-word;
+}
+
+.highlight {
+  background: var(--code-bg) !important;
+  border: 1px solid var(--rule); border-radius: 10px;
+  padding: 1rem 1.15rem; margin: 0 0 1.6rem;
+  overflow-x: auto; box-shadow: var(--shadow);
+}
+.highlight pre { margin: 0; background: none !important; }
+.highlight pre, .highlight code {
+  font: 13.5px/1.62 ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  background: none; padding: 0; border-radius: 0;
+}
+
+footer {
+  margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule);
+  color: var(--muted); font: 14px/1.6 ui-sans-serif, system-ui, sans-serif;
+}
+
+#theme {
+  position: fixed; top: 1rem; right: 1rem; z-index: 10;
+  width: 2.3rem; height: 2.3rem; border-radius: 50%;
+  border: 1px solid var(--rule); background: var(--surface); color: var(--fg);
+  cursor: pointer; font-size: 1rem; line-height: 1; box-shadow: var(--shadow);
+}
+
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  .wrap { padding-top: 2.5rem; }
+  .highlight { border-radius: 8px; padding: .85rem .9rem; }
+}
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #ffffcc }
+.highlight { background: #ffffff; }
+.highlight .c { color: #177500 } /* Comment */
+.highlight .err { color: #000000 } /* Error */
+.highlight .k { color: #A90D91 } /* Keyword */
+.highlight .l { color: #1C01CE } /* Literal */
+.highlight .n { color: #000000 } /* Name */
+.highlight .o { color: #000000 } /* Operator */
+.highlight .ch { color: #177500 } /* Comment.Hashbang */
+.highlight .cm { color: #177500 } /* Comment.Multiline */
+.highlight .cp { color: #633820 } /* Comment.Preproc */
+.highlight .cpf { color: #177500 } /* Comment.PreprocFile */
+.highlight .c1 { color: #177500 } /* Comment.Single */
+.highlight .cs { color: #177500 } /* Comment.Special */
+.highlight .kc { color: #A90D91 } /* Keyword.Constant */
+.highlight .kd { color: #A90D91 } /* Keyword.Declaration */
+.highlight .kn { color: #A90D91 } /* Keyword.Namespace */
+.highlight .kp { color: #A90D91 } /* Keyword.Pseudo */
+.highlight .kr { color: #A90D91 } /* Keyword.Reserved */
+.highlight .kt { color: #A90D91 } /* Keyword.Type */
+.highlight .ld { color: #1C01CE } /* Literal.Date */
+.highlight .m { color: #1C01CE } /* Literal.Number */
+.highlight .s { color: #C41A16 } /* Literal.String */
+.highlight .na { color: #836C28 } /* Name.Attribute */
+.highlight .nb { color: #A90D91 } /* Name.Builtin */
+.highlight .nc { color: #3F6E75 } /* Name.Class */
+.highlight .no { color: #000000 } /* Name.Constant */
+.highlight .nd { color: #000000 } /* Name.Decorator */
+.highlight .ni { color: #000000 } /* Name.Entity */
+.highlight .ne { color: #000000 } /* Name.Exception */
+.highlight .nf { color: #000000 } /* Name.Function */
+.highlight .nl { color: #000000 } /* Name.Label */
+.highlight .nn { color: #000000 } /* Name.Namespace */
+.highlight .nx { color: #000000 } /* Name.Other */
+.highlight .py { color: #000000 } /* Name.Property */
+.highlight .nt { color: #000000 } /* Name.Tag */
+.highlight .nv { color: #000000 } /* Name.Variable */
+.highlight .ow { color: #000000 } /* Operator.Word */
+.highlight .mb { color: #1C01CE } /* Literal.Number.Bin */
+.highlight .mf { color: #1C01CE } /* Literal.Number.Float */
+.highlight .mh { color: #1C01CE } /* Literal.Number.Hex */
+.highlight .mi { color: #1C01CE } /* Literal.Number.Integer */
+.highlight .mo { color: #1C01CE } /* Literal.Number.Oct */
+.highlight .sa { color: #C41A16 } /* Literal.String.Affix */
+.highlight .sb { color: #C41A16 } /* Literal.String.Backtick */
+.highlight .sc { color: #2300CE } /* Literal.String.Char */
+.highlight .dl { color: #C41A16 } /* Literal.String.Delimiter */
+.highlight .sd { color: #C41A16 } /* Literal.String.Doc */
+.highlight .s2 { color: #C41A16 } /* Literal.String.Double */
+.highlight .se { color: #C41A16 } /* Literal.String.Escape */
+.highlight .sh { color: #C41A16 } /* Literal.String.Heredoc */
+.highlight .si { color: #C41A16 } /* Literal.String.Interpol */
+.highlight .sx { color: #C41A16 } /* Literal.String.Other */
+.highlight .sr { color: #C41A16 } /* Literal.String.Regex */
+.highlight .s1 { color: #C41A16 } /* Literal.String.Single */
+.highlight .ss { color: #C41A16 } /* Literal.String.Symbol */
+.highlight .bp { color: #5B269A } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #000000 } /* Name.Function.Magic */
+.highlight .vc { color: #000000 } /* Name.Variable.Class */
+.highlight .vg { color: #000000 } /* Name.Variable.Global */
+.highlight .vi { color: #000000 } /* Name.Variable.Instance */
+.highlight .vm { color: #000000 } /* Name.Variable.Magic */
+.highlight .il { color: #1C01CE } /* Literal.Number.Integer.Long */
+@media (prefers-color-scheme: dark) {
+pre { line-height: 125%; }
+td.linenos .normal { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+:root:not([data-theme="light"]) .highlight .hll { background-color: #6e7681 }
+:root:not([data-theme="light"]) .highlight { background: #0d1117; color: #e6edf3 }
+:root:not([data-theme="light"]) .highlight .c { color: #8b949e; font-style: italic } /* Comment */
+:root:not([data-theme="light"]) .highlight .err { color: #f85149 } /* Error */
+:root:not([data-theme="light"]) .highlight .esc { color: #e6edf3 } /* Escape */
+:root:not([data-theme="light"]) .highlight .g { color: #e6edf3 } /* Generic */
+:root:not([data-theme="light"]) .highlight .k { color: #ff7b72 } /* Keyword */
+:root:not([data-theme="light"]) .highlight .l { color: #a5d6ff } /* Literal */
+:root:not([data-theme="light"]) .highlight .n { color: #e6edf3 } /* Name */
+:root:not([data-theme="light"]) .highlight .o { color: #ff7b72; font-weight: bold } /* Operator */
+:root:not([data-theme="light"]) .highlight .x { color: #e6edf3 } /* Other */
+:root:not([data-theme="light"]) .highlight .p { color: #e6edf3 } /* Punctuation */
+:root:not([data-theme="light"]) .highlight .ch { color: #8b949e; font-style: italic } /* Comment.Hashbang */
+:root:not([data-theme="light"]) .highlight .cm { color: #8b949e; font-style: italic } /* Comment.Multiline */
+:root:not([data-theme="light"]) .highlight .cp { color: #8b949e; font-weight: bold; font-style: italic } /* Comment.Preproc */
+:root:not([data-theme="light"]) .highlight .cpf { color: #8b949e; font-style: italic } /* Comment.PreprocFile */
+:root:not([data-theme="light"]) .highlight .c1 { color: #8b949e; font-style: italic } /* Comment.Single */
+:root:not([data-theme="light"]) .highlight .cs { color: #8b949e; font-weight: bold; font-style: italic } /* Comment.Special */
+:root:not([data-theme="light"]) .highlight .gd { color: #ffa198; background-color: #490202 } /* Generic.Deleted */
+:root:not([data-theme="light"]) .highlight .ge { color: #e6edf3; font-style: italic } /* Generic.Emph */
+:root:not([data-theme="light"]) .highlight .ges { color: #e6edf3; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+:root:not([data-theme="light"]) .highlight .gr { color: #ffa198 } /* Generic.Error */
+:root:not([data-theme="light"]) .highlight .gh { color: #79c0ff; font-weight: bold } /* Generic.Heading */
+:root:not([data-theme="light"]) .highlight .gi { color: #56d364; background-color: #0f5323 } /* Generic.Inserted */
+:root:not([data-theme="light"]) .highlight .go { color: #8b949e } /* Generic.Output */
+:root:not([data-theme="light"]) .highlight .gp { color: #8b949e } /* Generic.Prompt */
+:root:not([data-theme="light"]) .highlight .gs { color: #e6edf3; font-weight: bold } /* Generic.Strong */
+:root:not([data-theme="light"]) .highlight .gu { color: #79c0ff } /* Generic.Subheading */
+:root:not([data-theme="light"]) .highlight .gt { color: #ff7b72 } /* Generic.Traceback */
+:root:not([data-theme="light"]) .highlight .g-Underline { color: #e6edf3; text-decoration: underline } /* Generic.Underline */
+:root:not([data-theme="light"]) .highlight .kc { color: #79c0ff } /* Keyword.Constant */
+:root:not([data-theme="light"]) .highlight .kd { color: #ff7b72 } /* Keyword.Declaration */
+:root:not([data-theme="light"]) .highlight .kn { color: #ff7b72 } /* Keyword.Namespace */
+:root:not([data-theme="light"]) .highlight .kp { color: #79c0ff } /* Keyword.Pseudo */
+:root:not([data-theme="light"]) .highlight .kr { color: #ff7b72 } /* Keyword.Reserved */
+:root:not([data-theme="light"]) .highlight .kt { color: #ff7b72 } /* Keyword.Type */
+:root:not([data-theme="light"]) .highlight .ld { color: #79c0ff } /* Literal.Date */
+:root:not([data-theme="light"]) .highlight .m { color: #a5d6ff } /* Literal.Number */
+:root:not([data-theme="light"]) .highlight .s { color: #a5d6ff } /* Literal.String */
+:root:not([data-theme="light"]) .highlight .na { color: #e6edf3 } /* Name.Attribute */
+:root:not([data-theme="light"]) .highlight .nb { color: #e6edf3 } /* Name.Builtin */
+:root:not([data-theme="light"]) .highlight .nc { color: #f0883e; font-weight: bold } /* Name.Class */
+:root:not([data-theme="light"]) .highlight .no { color: #79c0ff; font-weight: bold } /* Name.Constant */
+:root:not([data-theme="light"]) .highlight .nd { color: #d2a8ff; font-weight: bold } /* Name.Decorator */
+:root:not([data-theme="light"]) .highlight .ni { color: #ffa657 } /* Name.Entity */
+:root:not([data-theme="light"]) .highlight .ne { color: #f0883e; font-weight: bold } /* Name.Exception */
+:root:not([data-theme="light"]) .highlight .nf { color: #d2a8ff; font-weight: bold } /* Name.Function */
+:root:not([data-theme="light"]) .highlight .nl { color: #79c0ff; font-weight: bold } /* Name.Label */
+:root:not([data-theme="light"]) .highlight .nn { color: #ff7b72 } /* Name.Namespace */
+:root:not([data-theme="light"]) .highlight .nx { color: #e6edf3 } /* Name.Other */
+:root:not([data-theme="light"]) .highlight .py { color: #79c0ff } /* Name.Property */
+:root:not([data-theme="light"]) .highlight .nt { color: #7ee787 } /* Name.Tag */
+:root:not([data-theme="light"]) .highlight .nv { color: #79c0ff } /* Name.Variable */
+:root:not([data-theme="light"]) .highlight .ow { color: #ff7b72; font-weight: bold } /* Operator.Word */
+:root:not([data-theme="light"]) .highlight .pm { color: #e6edf3 } /* Punctuation.Marker */
+:root:not([data-theme="light"]) .highlight .w { color: #6e7681 } /* Text.Whitespace */
+:root:not([data-theme="light"]) .highlight .mb { color: #a5d6ff } /* Literal.Number.Bin */
+:root:not([data-theme="light"]) .highlight .mf { color: #a5d6ff } /* Literal.Number.Float */
+:root:not([data-theme="light"]) .highlight .mh { color: #a5d6ff } /* Literal.Number.Hex */
+:root:not([data-theme="light"]) .highlight .mi { color: #a5d6ff } /* Literal.Number.Integer */
+:root:not([data-theme="light"]) .highlight .mo { color: #a5d6ff } /* Literal.Number.Oct */
+:root:not([data-theme="light"]) .highlight .sa { color: #79c0ff } /* Literal.String.Affix */
+:root:not([data-theme="light"]) .highlight .sb { color: #a5d6ff } /* Literal.String.Backtick */
+:root:not([data-theme="light"]) .highlight .sc { color: #a5d6ff } /* Literal.String.Char */
+:root:not([data-theme="light"]) .highlight .dl { color: #79c0ff } /* Literal.String.Delimiter */
+:root:not([data-theme="light"]) .highlight .sd { color: #a5d6ff } /* Literal.String.Doc */
+:root:not([data-theme="light"]) .highlight .s2 { color: #a5d6ff } /* Literal.String.Double */
+:root:not([data-theme="light"]) .highlight .se { color: #79c0ff } /* Literal.String.Escape */
+:root:not([data-theme="light"]) .highlight .sh { color: #79c0ff } /* Literal.String.Heredoc */
+:root:not([data-theme="light"]) .highlight .si { color: #a5d6ff } /* Literal.String.Interpol */
+:root:not([data-theme="light"]) .highlight .sx { color: #a5d6ff } /* Literal.String.Other */
+:root:not([data-theme="light"]) .highlight .sr { color: #79c0ff } /* Literal.String.Regex */
+:root:not([data-theme="light"]) .highlight .s1 { color: #a5d6ff } /* Literal.String.Single */
+:root:not([data-theme="light"]) .highlight .ss { color: #a5d6ff } /* Literal.String.Symbol */
+:root:not([data-theme="light"]) .highlight .bp { color: #e6edf3 } /* Name.Builtin.Pseudo */
+:root:not([data-theme="light"]) .highlight .fm { color: #d2a8ff; font-weight: bold } /* Name.Function.Magic */
+:root:not([data-theme="light"]) .highlight .vc { color: #79c0ff } /* Name.Variable.Class */
+:root:not([data-theme="light"]) .highlight .vg { color: #79c0ff } /* Name.Variable.Global */
+:root:not([data-theme="light"]) .highlight .vi { color: #79c0ff } /* Name.Variable.Instance */
+:root:not([data-theme="light"]) .highlight .vm { color: #79c0ff } /* Name.Variable.Magic */
+:root:not([data-theme="light"]) .highlight .il { color: #a5d6ff } /* Literal.Number.Integer.Long */
+}
+pre { line-height: 125%; }
+td.linenos .normal { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+:root[data-theme="dark"] .highlight .hll { background-color: #6e7681 }
+:root[data-theme="dark"] .highlight { background: #0d1117; color: #e6edf3 }
+:root[data-theme="dark"] .highlight .c { color: #8b949e; font-style: italic } /* Comment */
+:root[data-theme="dark"] .highlight .err { color: #f85149 } /* Error */
+:root[data-theme="dark"] .highlight .esc { color: #e6edf3 } /* Escape */
+:root[data-theme="dark"] .highlight .g { color: #e6edf3 } /* Generic */
+:root[data-theme="dark"] .highlight .k { color: #ff7b72 } /* Keyword */
+:root[data-theme="dark"] .highlight .l { color: #a5d6ff } /* Literal */
+:root[data-theme="dark"] .highlight .n { color: #e6edf3 } /* Name */
+:root[data-theme="dark"] .highlight .o { color: #ff7b72; font-weight: bold } /* Operator */
+:root[data-theme="dark"] .highlight .x { color: #e6edf3 } /* Other */
+:root[data-theme="dark"] .highlight .p { color: #e6edf3 } /* Punctuation */
+:root[data-theme="dark"] .highlight .ch { color: #8b949e; font-style: italic } /* Comment.Hashbang */
+:root[data-theme="dark"] .highlight .cm { color: #8b949e; font-style: italic } /* Comment.Multiline */
+:root[data-theme="dark"] .highlight .cp { color: #8b949e; font-weight: bold; font-style: italic } /* Comment.Preproc */
+:root[data-theme="dark"] .highlight .cpf { color: #8b949e; font-style: italic } /* Comment.PreprocFile */
+:root[data-theme="dark"] .highlight .c1 { color: #8b949e; font-style: italic } /* Comment.Single */
+:root[data-theme="dark"] .highlight .cs { color: #8b949e; font-weight: bold; font-style: italic } /* Comment.Special */
+:root[data-theme="dark"] .highlight .gd { color: #ffa198; background-color: #490202 } /* Generic.Deleted */
+:root[data-theme="dark"] .highlight .ge { color: #e6edf3; font-style: italic } /* Generic.Emph */
+:root[data-theme="dark"] .highlight .ges { color: #e6edf3; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+:root[data-theme="dark"] .highlight .gr { color: #ffa198 } /* Generic.Error */
+:root[data-theme="dark"] .highlight .gh { color: #79c0ff; font-weight: bold } /* Generic.Heading */
+:root[data-theme="dark"] .highlight .gi { color: #56d364; background-color: #0f5323 } /* Generic.Inserted */
+:root[data-theme="dark"] .highlight .go { color: #8b949e } /* Generic.Output */
+:root[data-theme="dark"] .highlight .gp { color: #8b949e } /* Generic.Prompt */
+:root[data-theme="dark"] .highlight .gs { color: #e6edf3; font-weight: bold } /* Generic.Strong */
+:root[data-theme="dark"] .highlight .gu { color: #79c0ff } /* Generic.Subheading */
+:root[data-theme="dark"] .highlight .gt { color: #ff7b72 } /* Generic.Traceback */
+:root[data-theme="dark"] .highlight .g-Underline { color: #e6edf3; text-decoration: underline } /* Generic.Underline */
+:root[data-theme="dark"] .highlight .kc { color: #79c0ff } /* Keyword.Constant */
+:root[data-theme="dark"] .highlight .kd { color: #ff7b72 } /* Keyword.Declaration */
+:root[data-theme="dark"] .highlight .kn { color: #ff7b72 } /* Keyword.Namespace */
+:root[data-theme="dark"] .highlight .kp { color: #79c0ff } /* Keyword.Pseudo */
+:root[data-theme="dark"] .highlight .kr { color: #ff7b72 } /* Keyword.Reserved */
+:root[data-theme="dark"] .highlight .kt { color: #ff7b72 } /* Keyword.Type */
+:root[data-theme="dark"] .highlight .ld { color: #79c0ff } /* Literal.Date */
+:root[data-theme="dark"] .highlight .m { color: #a5d6ff } /* Literal.Number */
+:root[data-theme="dark"] .highlight .s { color: #a5d6ff } /* Literal.String */
+:root[data-theme="dark"] .highlight .na { color: #e6edf3 } /* Name.Attribute */
+:root[data-theme="dark"] .highlight .nb { color: #e6edf3 } /* Name.Builtin */
+:root[data-theme="dark"] .highlight .nc { color: #f0883e; font-weight: bold } /* Name.Class */
+:root[data-theme="dark"] .highlight .no { color: #79c0ff; font-weight: bold } /* Name.Constant */
+:root[data-theme="dark"] .highlight .nd { color: #d2a8ff; font-weight: bold } /* Name.Decorator */
+:root[data-theme="dark"] .highlight .ni { color: #ffa657 } /* Name.Entity */
+:root[data-theme="dark"] .highlight .ne { color: #f0883e; font-weight: bold } /* Name.Exception */
+:root[data-theme="dark"] .highlight .nf { color: #d2a8ff; font-weight: bold } /* Name.Function */
+:root[data-theme="dark"] .highlight .nl { color: #79c0ff; font-weight: bold } /* Name.Label */
+:root[data-theme="dark"] .highlight .nn { color: #ff7b72 } /* Name.Namespace */
+:root[data-theme="dark"] .highlight .nx { color: #e6edf3 } /* Name.Other */
+:root[data-theme="dark"] .highlight .py { color: #79c0ff } /* Name.Property */
+:root[data-theme="dark"] .highlight .nt { color: #7ee787 } /* Name.Tag */
+:root[data-theme="dark"] .highlight .nv { color: #79c0ff } /* Name.Variable */
+:root[data-theme="dark"] .highlight .ow { color: #ff7b72; font-weight: bold } /* Operator.Word */
+:root[data-theme="dark"] .highlight .pm { color: #e6edf3 } /* Punctuation.Marker */
+:root[data-theme="dark"] .highlight .w { color: #6e7681 } /* Text.Whitespace */
+:root[data-theme="dark"] .highlight .mb { color: #a5d6ff } /* Literal.Number.Bin */
+:root[data-theme="dark"] .highlight .mf { color: #a5d6ff } /* Literal.Number.Float */
+:root[data-theme="dark"] .highlight .mh { color: #a5d6ff } /* Literal.Number.Hex */
+:root[data-theme="dark"] .highlight .mi { color: #a5d6ff } /* Literal.Number.Integer */
+:root[data-theme="dark"] .highlight .mo { color: #a5d6ff } /* Literal.Number.Oct */
+:root[data-theme="dark"] .highlight .sa { color: #79c0ff } /* Literal.String.Affix */
+:root[data-theme="dark"] .highlight .sb { color: #a5d6ff } /* Literal.String.Backtick */
+:root[data-theme="dark"] .highlight .sc { color: #a5d6ff } /* Literal.String.Char */
+:root[data-theme="dark"] .highlight .dl { color: #79c0ff } /* Literal.String.Delimiter */
+:root[data-theme="dark"] .highlight .sd { color: #a5d6ff } /* Literal.String.Doc */
+:root[data-theme="dark"] .highlight .s2 { color: #a5d6ff } /* Literal.String.Double */
+:root[data-theme="dark"] .highlight .se { color: #79c0ff } /* Literal.String.Escape */
+:root[data-theme="dark"] .highlight .sh { color: #79c0ff } /* Literal.String.Heredoc */
+:root[data-theme="dark"] .highlight .si { color: #a5d6ff } /* Literal.String.Interpol */
+:root[data-theme="dark"] .highlight .sx { color: #a5d6ff } /* Literal.String.Other */
+:root[data-theme="dark"] .highlight .sr { color: #79c0ff } /* Literal.String.Regex */
+:root[data-theme="dark"] .highlight .s1 { color: #a5d6ff } /* Literal.String.Single */
+:root[data-theme="dark"] .highlight .ss { color: #a5d6ff } /* Literal.String.Symbol */
+:root[data-theme="dark"] .highlight .bp { color: #e6edf3 } /* Name.Builtin.Pseudo */
+:root[data-theme="dark"] .highlight .fm { color: #d2a8ff; font-weight: bold } /* Name.Function.Magic */
+:root[data-theme="dark"] .highlight .vc { color: #79c0ff } /* Name.Variable.Class */
+:root[data-theme="dark"] .highlight .vg { color: #79c0ff } /* Name.Variable.Global */
+:root[data-theme="dark"] .highlight .vi { color: #79c0ff } /* Name.Variable.Instance */
+:root[data-theme="dark"] .highlight .vm { color: #79c0ff } /* Name.Variable.Magic */
+:root[data-theme="dark"] .highlight .il { color: #a5d6ff } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<button id="theme" type="button" aria-label="Przełącz motyw">◑</button>
+<div class="wrap">
+<header class="masthead">
+  <div class="kicker">Change Data Capture · Go</div>
+  <h1>Router CDC w Go: binlogi MySQL przez Bento na wiele sinków</h1>
+  <p class="lede">Jak z go-mysql i Bento złożyć router CDC, który czyta binlog MySQL i rozsyła zmiany na trzy różne sinki, każdy z własnym filtrem.</p>
+</header>
+<nav class="toc"><strong>W tym tekście</strong><a class="lvl2" href="#1-czym-jest-bento">1. Czym jest Bento</a><a class="lvl2" href="#2-co-daje-go-mysql-binlog-jako-strumien-zdarzen">2. Co daje go-mysql — binlog jako strumień zdarzeń</a><a class="lvl2" href="#3-sklejenie-wlasny-input-plugin">3. Sklejenie: własny input plugin</a><a class="lvl3" href="#handler-canala-wiersz-na-wiadomosc">Handler canala: wiersz na wiadomość</a><a class="lvl3" href="#input-connect-read-close">Input: Connect, Read, Close</a><a class="lvl3" href="#rejestracja">Rejestracja</a><a class="lvl2" href="#4-rozrzucanie-jednego-strumienia-na-wiele-sinkow">4. Rozrzucanie jednego strumienia na wiele sinków</a><a class="lvl3" href="#co-trzeba-wiedziec-o-fan-out">Co trzeba wiedzieć o fan_out</a><a class="lvl3" href="#czego-nie-da-sie-obejsc">Czego nie da się obejść</a><a class="lvl2" href="#podsumowanie">Podsumowanie</a></nav>
+<main>
+<p>Problem jest banalny do opisania i uciążliwy do zrobienia dobrze: zmiany w bazie MySQL mają trafić do kilku systemów naraz, każdy z innym wycinkiem danych. Kafka ma dostać tylko zamówienia, audyt tylko transakcje powyżej progu, archiwum na S3 wszystko. Klasyczne podejście — triggery, polling po <code>updated_at</code>, kolejka pisana z aplikacji — albo obciąża bazę, albo gubi zdarzenia, albo wymaga, żeby każdy producent pamiętał o publikowaniu eventów.</p>
+<p>Czysty CDC rozwiązuje to inaczej: czytamy binlog MySQL, czyli ten sam strumień, z którego korzystają repliki, i rozsyłamy go dalej. Poniżej składam taki router z dwóch klocków — <code>go-mysql</code> jako czytnika binloga i Bento jako silnika routingu.</p>
+<h2 id="1-czym-jest-bento">1. Czym jest Bento</h2>
+<p><a href="https://github.com/warpstreamlabs/bento">Bento</a> to procesor strumieni deklarowany w YAML-u — fork Benthosa, utrzymywany przez WarpStream Labs po tym, jak oryginalny projekt trafił pod Redpandę i zmienił licencję. Jeden statycznie linkowany binarek, bez JVM, bez klastra, bez ZooKeepera.</p>
+<p>Model jest prosty i to jest jego największa zaleta:</p>
+<div class="highlight"><pre><span></span><span class="nt">input</span><span class="p">:</span><span class="w">      </span><span class="c1"># skąd</span>
+<span class="nt">pipeline</span><span class="p">:</span><span class="w">   </span><span class="c1"># co z tym zrobić</span>
+<span class="w">  </span><span class="nt">processors</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
+<span class="nt">output</span><span class="p">:</span><span class="w">     </span><span class="c1"># dokąd</span>
+</pre></div>
+
+<p>W komplecie jest ponad sto komponentów: Kafka, NATS, Redis, SQL, S3, GCP Pub/Sub, HTTP, MQTT, Pulsar, pliki, stdin. Transformacje pisze się w Bloblangu — własnym języku mapowania, który zastępuje typowe „wrzućmy tu lambdę w Pythonie&quot;:</p>
+<div class="highlight"><pre><span></span><span class="nv">root.id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="nx">user</span><span class="p">.</span><span class="nx">id</span>
+<span class="nv">root.total</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="nx">items</span><span class="p">.</span><span class="nx">map_each</span><span class="p">(</span><span class="nx">i</span><span class="w"> </span><span class="nf">-&gt;</span><span class="w"> </span><span class="nx">i</span><span class="p">.</span><span class="nx">price</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="nx">i</span><span class="p">.</span><span class="nx">qty</span><span class="p">).</span><span class="nx">sum</span><span class="p">()</span>
+<span class="nv">root</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="nx">status</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&quot;draft&quot;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">deleted</span><span class="p">()</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+
+<p><code>deleted()</code> kasuje wiadomość ze strumienia — to jest cały mechanizm filtrowania i za chwilę zrobi nam całą robotę przy routingu.</p>
+<p>Bento ma wbudowany backpressure, retry, batching, buforowanie na dysku i metryki. Daje gwarancję at-least-once: wiadomość jest potwierdzana wobec źródła dopiero wtedy, gdy wyjście potwierdzi zapis.</p>
+<p>Dla nas najważniejsze jest jednak to, że Bento to <strong>biblioteka Go</strong>, nie tylko CLI. Pakiet <code>github.com/warpstreamlabs/bento/public/service</code> pozwala zarejestrować własny input, procesor albo output i zbudować z tego własny binarek, który dalej rozumie standardowy YAML i wszystkie wbudowane komponenty.</p>
+<h2 id="2-co-daje-go-mysql-binlog-jako-strumien-zdarzen">2. Co daje go-mysql — binlog jako strumień zdarzeń</h2>
+<p><a href="https://github.com/go-mysql-org/go-mysql">go-mysql</a> to czysto-go&#x27;wa implementacja protokołu sieciowego MySQL, łącznie z protokołem replikacji. Biblioteka podszywa się pod replikę: łączy się z masterem, mówi „jestem serwerem o ID 1001, poproszę binlog od pozycji X&quot; i dostaje strumień zdarzeń.</p>
+<p>Są dwa poziomy API.</p>
+<p><strong><code>replication.BinlogSyncer</code></strong> — surowe zdarzenia binloga, jeden do jednego z protokołem:</p>
+<div class="highlight"><pre><span></span><span class="nx">cfg</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">replication</span><span class="p">.</span><span class="nx">BinlogSyncerConfig</span><span class="p">{</span>
+<span class="w">    </span><span class="nx">ServerID</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">Flavor</span><span class="p">:</span><span class="w">   </span><span class="s">&quot;mysql&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">Host</span><span class="p">:</span><span class="w">     </span><span class="s">&quot;127.0.0.1&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">Port</span><span class="p">:</span><span class="w">     </span><span class="mi">3306</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">User</span><span class="p">:</span><span class="w">     </span><span class="s">&quot;repl&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">Password</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;repl&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="nx">syncer</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">replication</span><span class="p">.</span><span class="nx">NewBinlogSyncer</span><span class="p">(</span><span class="nx">cfg</span><span class="p">)</span>
+<span class="nx">streamer</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">syncer</span><span class="p">.</span><span class="nx">StartSync</span><span class="p">(</span><span class="nx">mysql</span><span class="p">.</span><span class="nx">Position</span><span class="p">{</span><span class="nx">Name</span><span class="p">:</span><span class="w"> </span><span class="nx">binlogFile</span><span class="p">,</span><span class="w"> </span><span class="nx">Pos</span><span class="p">:</span><span class="w"> </span><span class="nx">binlogPos</span><span class="p">})</span>
+
+<span class="k">for</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">ev</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">streamer</span><span class="p">.</span><span class="nx">GetEvent</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">())</span>
+<span class="w">    </span><span class="nx">ev</span><span class="p">.</span><span class="nx">Dump</span><span class="p">(</span><span class="nx">os</span><span class="p">.</span><span class="nx">Stdout</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+
+<p>Dostajesz <code>RotateEvent</code>, <code>TableMapEvent</code>, <code>WriteRowsEvent</code>, <code>XIDEvent</code> i resztę zoo. Pełna kontrola, ale metadane tabel — nazwy kolumn, typy — musisz śledzić sam, bo w surowym binlogu wierszy są same wartości pozycyjne.</p>
+<p><strong><code>canal</code></strong> — warstwa wyżej, i to jej zwykle chcesz:</p>
+<div class="highlight"><pre><span></span><span class="kd">type</span><span class="w"> </span><span class="nx">MyEventHandler</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">canal</span><span class="p">.</span><span class="nx">DummyEventHandler</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">h</span><span class="w"> </span><span class="o">*</span><span class="nx">MyEventHandler</span><span class="p">)</span><span class="w"> </span><span class="nx">OnRow</span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="o">*</span><span class="nx">canal</span><span class="p">.</span><span class="nx">RowsEvent</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">log</span><span class="p">.</span><span class="nx">Infof</span><span class="p">(</span><span class="s">&quot;%s %v\n&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Action</span><span class="p">,</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Rows</span><span class="p">)</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
+<span class="p">}</span>
+
+<span class="nx">cfg</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">canal</span><span class="p">.</span><span class="nx">NewDefaultConfig</span><span class="p">()</span>
+<span class="nx">cfg</span><span class="p">.</span><span class="nx">Addr</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&quot;127.0.0.1:3306&quot;</span>
+<span class="nx">cfg</span><span class="p">.</span><span class="nx">Dump</span><span class="p">.</span><span class="nx">Tables</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">&quot;canal_test&quot;</span><span class="p">}</span>
+
+<span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">canal</span><span class="p">.</span><span class="nx">NewCanal</span><span class="p">(</span><span class="nx">cfg</span><span class="p">)</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">SetEventHandler</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">MyEventHandler</span><span class="p">{})</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">Run</span><span class="p">()</span>
+</pre></div>
+
+<p>Canal sam utrzymuje połączenie, obsługuje reconnect i rotację plików binloga, a przede wszystkim trzyma cache schematu: w <code>e.Table.Columns</code> masz nazwy kolumn, więc możesz zamienić pozycyjny wiersz w sensownego JSON-a. Filtruje też tabele regexpem (<code>IncludeTableRegex</code>) i potrafi zrobić wstępny snapshot przez <code>mysqldump</code>, zanim przejdzie na strumień.</p>
+<p>Kilka rzeczy, o których trzeba wiedzieć od razu:</p>
+<ul><li>Przy <code>UpdateAction</code> pole <code>e.Rows</code> zawiera <strong>pary</strong>: wiersz przed i wiersz po, naprzemiennie. Łatwo to przeoczyć i wypuścić dwa razy więcej eventów.</li><li>Baza musi mieć <code>binlog_format=ROW</code>. Bez <code>binlog_row_image=FULL</code> stan sprzed zmiany będzie niekompletny.</li><li>Użytkownik potrzebuje grantów <code>REPLICATION SLAVE</code> i <code>REPLICATION CLIENT</code>.</li><li><code>ServerID</code> musi być unikalny w całej topologii replikacji. Dwa procesy z tym samym ID będą się nawzajem rozłączać.</li><li>Pozycji w binlogu <strong>nikt za ciebie nie zapisze</strong>. Canal jej nie utrwala — to twoja robota i od niej zależy, czy restart oznacza wznowienie, czy utratę zdarzeń.</li></ul>
+<h2 id="3-sklejenie-wlasny-input-plugin">3. Sklejenie: własny input plugin</h2>
+<p>Bento nie ma wbudowanego inputu MySQL CDC — na liście komponentów jest CockroachDB changefeed i GCP Spanner CDC, MySQL-a nie ma. Piszemy własny.</p>
+<p>Kontrakt jest króciutki:</p>
+<div class="highlight"><pre><span></span><span class="kd">type</span><span class="w"> </span><span class="nx">Input</span><span class="w"> </span><span class="kd">interface</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">Connect</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span>
+<span class="w">    </span><span class="nx">Read</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="nx">Message</span><span class="p">,</span><span class="w"> </span><span class="nx">AckFunc</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">Close</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span>
+<span class="p">}</span>
+</pre></div>
+
+<p>Problem do rozwiązania jest jeden: canal jest <strong>push</strong> (woła twój handler), a Bento jest <strong>pull</strong> (woła twoje <code>Read</code>). Mostem jest kanał — i to kanał <em>bez bufora</em>, bo wtedy blokująca wysyłka w handlerze canala staje się naturalnym backpressure. Gdy pipeline stanie, czytanie binloga też stanie, zamiast puchnąć w pamięci.</p>
+<h3 id="handler-canala-wiersz-na-wiadomosc">Handler canala: wiersz na wiadomość</h3>
+<div class="highlight"><pre><span></span><span class="kd">type</span><span class="w"> </span><span class="nx">event</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">Schema</span><span class="w"> </span><span class="kt">string</span><span class="w">         </span><span class="s">`json:&quot;schema&quot;`</span>
+<span class="w">    </span><span class="nx">Table</span><span class="w">  </span><span class="kt">string</span><span class="w">         </span><span class="s">`json:&quot;table&quot;`</span>
+<span class="w">    </span><span class="nx">Action</span><span class="w"> </span><span class="kt">string</span><span class="w">         </span><span class="s">`json:&quot;action&quot;`</span><span class="w"> </span><span class="c1">// insert | update | delete</span>
+<span class="w">    </span><span class="nx">Before</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="w"> </span><span class="s">`json:&quot;before,omitempty&quot;`</span>
+<span class="w">    </span><span class="nx">After</span><span class="w">  </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="w"> </span><span class="s">`json:&quot;after,omitempty&quot;`</span>
+<span class="w">    </span><span class="nx">File</span><span class="w">   </span><span class="kt">string</span><span class="w">         </span><span class="s">`json:&quot;file&quot;`</span>
+<span class="w">    </span><span class="nx">Pos</span><span class="w">    </span><span class="kt">uint32</span><span class="w">         </span><span class="s">`json:&quot;pos&quot;`</span>
+<span class="p">}</span>
+
+<span class="kd">type</span><span class="w"> </span><span class="nx">handler</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">canal</span><span class="p">.</span><span class="nx">DummyEventHandler</span>
+<span class="w">    </span><span class="nx">out</span><span class="w">  </span><span class="kd">chan</span><span class="w"> </span><span class="o">*</span><span class="nx">service</span><span class="p">.</span><span class="nx">Message</span>
+<span class="w">    </span><span class="nx">ctx</span><span class="w">  </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span>
+<span class="w">    </span><span class="nx">mu</span><span class="w">   </span><span class="nx">sync</span><span class="p">.</span><span class="nx">Mutex</span>
+<span class="w">    </span><span class="nx">file</span><span class="w"> </span><span class="kt">string</span>
+<span class="p">}</span>
+
+<span class="c1">// The binlog file name only arrives in rotate events, so we track it here.</span>
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">h</span><span class="w"> </span><span class="o">*</span><span class="nx">handler</span><span class="p">)</span><span class="w"> </span><span class="nx">OnRotate</span><span class="p">(</span><span class="nx">_</span><span class="w"> </span><span class="o">*</span><span class="nx">replication</span><span class="p">.</span><span class="nx">EventHeader</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">*</span><span class="nx">canal</span><span class="p">.</span><span class="nx">RotateEvent</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">h</span><span class="p">.</span><span class="nx">mu</span><span class="p">.</span><span class="nx">Lock</span><span class="p">()</span>
+<span class="w">    </span><span class="nx">h</span><span class="p">.</span><span class="nx">file</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">string</span><span class="p">(</span><span class="nx">r</span><span class="p">.</span><span class="nx">NextLogName</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">h</span><span class="p">.</span><span class="nx">mu</span><span class="p">.</span><span class="nx">Unlock</span><span class="p">()</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">rowMap</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">schema</span><span class="p">.</span><span class="nx">Table</span><span class="p">,</span><span class="w"> </span><span class="nx">row</span><span class="w"> </span><span class="p">[]</span><span class="kt">any</span><span class="p">)</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">m</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">make</span><span class="p">(</span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">row</span><span class="p">))</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">Columns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="p">&lt;</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">row</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">m</span><span class="p">[</span><span class="nx">c</span><span class="p">.</span><span class="nx">Name</span><span class="p">]</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">row</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">m</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">h</span><span class="w"> </span><span class="o">*</span><span class="nx">handler</span><span class="p">)</span><span class="w"> </span><span class="nx">OnRow</span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="o">*</span><span class="nx">canal</span><span class="p">.</span><span class="nx">RowsEvent</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">base</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">event</span><span class="p">{</span>
+<span class="w">        </span><span class="nx">Schema</span><span class="p">:</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Table</span><span class="p">.</span><span class="nx">Schema</span><span class="p">,</span>
+<span class="w">        </span><span class="nx">Table</span><span class="p">:</span><span class="w">  </span><span class="nx">e</span><span class="p">.</span><span class="nx">Table</span><span class="p">.</span><span class="nx">Name</span><span class="p">,</span>
+<span class="w">        </span><span class="nx">Action</span><span class="p">:</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Action</span><span class="p">,</span>
+<span class="w">        </span><span class="nx">File</span><span class="p">:</span><span class="w">   </span><span class="nx">h</span><span class="p">.</span><span class="nx">curFile</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">Pos</span><span class="p">:</span><span class="w">    </span><span class="nx">e</span><span class="p">.</span><span class="nx">Header</span><span class="p">.</span><span class="nx">LogPos</span><span class="p">,</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">evs</span><span class="w"> </span><span class="p">[]</span><span class="nx">event</span>
+<span class="w">    </span><span class="k">switch</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Action</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">canal</span><span class="p">.</span><span class="nx">UpdateAction</span><span class="p">:</span>
+<span class="w">        </span><span class="c1">// Rows arrive in before/after pairs.</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="nx">i</span><span class="o">+</span><span class="mi">1</span><span class="w"> </span><span class="p">&lt;</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">Rows</span><span class="p">);</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">ev</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">base</span>
+<span class="w">            </span><span class="nx">ev</span><span class="p">.</span><span class="nx">Before</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">rowMap</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">Table</span><span class="p">,</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Rows</span><span class="p">[</span><span class="nx">i</span><span class="p">])</span>
+<span class="w">            </span><span class="nx">ev</span><span class="p">.</span><span class="nx">After</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">rowMap</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">Table</span><span class="p">,</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Rows</span><span class="p">[</span><span class="nx">i</span><span class="o">+</span><span class="mi">1</span><span class="p">])</span>
+<span class="w">            </span><span class="nx">evs</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">evs</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">canal</span><span class="p">.</span><span class="nx">DeleteAction</span><span class="p">:</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Rows</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">ev</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">base</span>
+<span class="w">            </span><span class="nx">ev</span><span class="p">.</span><span class="nx">Before</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">rowMap</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">Table</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">evs</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">evs</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="k">default</span><span class="p">:</span><span class="w"> </span><span class="c1">// insert</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">Rows</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">ev</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">base</span>
+<span class="w">            </span><span class="nx">ev</span><span class="p">.</span><span class="nx">After</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">rowMap</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">Table</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">evs</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">evs</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">evs</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">msg</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">service</span><span class="p">.</span><span class="nx">NewMessage</span><span class="p">(</span><span class="kc">nil</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">msg</span><span class="p">.</span><span class="nx">SetStructured</span><span class="p">(</span><span class="nx">ev</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaSet</span><span class="p">(</span><span class="s">&quot;db&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">.</span><span class="nx">Schema</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaSet</span><span class="p">(</span><span class="s">&quot;table&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">.</span><span class="nx">Table</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaSet</span><span class="p">(</span><span class="s">&quot;action&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">.</span><span class="nx">Action</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaSet</span><span class="p">(</span><span class="s">&quot;binlog_file&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">ev</span><span class="p">.</span><span class="nx">File</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaSet</span><span class="p">(</span><span class="s">&quot;binlog_pos&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">FormatUint</span><span class="p">(</span><span class="nb">uint64</span><span class="p">(</span><span class="nx">ev</span><span class="p">.</span><span class="nx">Pos</span><span class="p">),</span><span class="w"> </span><span class="mi">10</span><span class="p">))</span>
+
+<span class="w">        </span><span class="c1">// Blocking send is the backpressure.</span>
+<span class="w">        </span><span class="k">select</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">case</span><span class="w"> </span><span class="nx">h</span><span class="p">.</span><span class="nx">out</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nx">msg</span><span class="p">:</span>
+<span class="w">        </span><span class="k">case</span><span class="w"> </span><span class="o">&lt;-</span><span class="nx">h</span><span class="p">.</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">Done</span><span class="p">():</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nx">h</span><span class="p">.</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">Err</span><span class="p">()</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
+<span class="p">}</span>
+</pre></div>
+
+<p>Warto zwrócić uwagę na metadane. Dublują treść, ale dzięki nim filtry w konfiguracji są jednolinijkowe i nie trzeba parsować payloadu — <code>meta(&quot;table&quot;)</code> zamiast <code>this.table</code>.</p>
+<h3 id="input-connect-read-close">Input: Connect, Read, Close</h3>
+<div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">binlogInput</span><span class="p">)</span><span class="w"> </span><span class="nx">Connect</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">canal</span><span class="p">.</span><span class="nx">NewCanal</span><span class="p">(</span><span class="nx">b</span><span class="p">.</span><span class="nx">cfg</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">err</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nx">runCtx</span><span class="p">,</span><span class="w"> </span><span class="nx">cancel</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">WithCancel</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">())</span>
+<span class="w">    </span><span class="nx">b</span><span class="p">.</span><span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">cancel</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="nx">cancel</span>
+<span class="w">    </span><span class="nx">b</span><span class="p">.</span><span class="nx">out</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">make</span><span class="p">(</span><span class="kd">chan</span><span class="w"> </span><span class="o">*</span><span class="nx">service</span><span class="p">.</span><span class="nx">Message</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">b</span><span class="p">.</span><span class="nx">errCh</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">make</span><span class="p">(</span><span class="kd">chan</span><span class="w"> </span><span class="kt">error</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span>
+
+<span class="w">    </span><span class="nx">c</span><span class="p">.</span><span class="nx">SetEventHandler</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">handler</span><span class="p">{</span><span class="nx">out</span><span class="p">:</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">out</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">:</span><span class="w"> </span><span class="nx">runCtx</span><span class="p">})</span>
+
+<span class="w">    </span><span class="nx">pos</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">loadPos</span><span class="p">()</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">cancel</span><span class="p">()</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">err</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">go</span><span class="w"> </span><span class="kd">func</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">defer</span><span class="w"> </span><span class="nb">close</span><span class="p">(</span><span class="nx">b</span><span class="p">.</span><span class="nx">out</span><span class="p">)</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="nx">runErr</span><span class="w"> </span><span class="kt">error</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">pos</span><span class="p">.</span><span class="nx">Name</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">runErr</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Run</span><span class="p">()</span><span class="w"> </span><span class="c1">// start from the current master position</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">runErr</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">RunFrom</span><span class="p">(</span><span class="nx">pos</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">runErr</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">select</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">case</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">errCh</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nx">runErr</span><span class="p">:</span>
+<span class="w">            </span><span class="k">default</span><span class="p">:</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}()</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">binlogInput</span><span class="p">)</span><span class="w"> </span><span class="nx">Read</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="nx">service</span><span class="p">.</span><span class="nx">Message</span><span class="p">,</span><span class="w"> </span><span class="nx">service</span><span class="p">.</span><span class="nx">AckFunc</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">select</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">msg</span><span class="p">,</span><span class="w"> </span><span class="nx">ok</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="o">&lt;-</span><span class="nx">b</span><span class="p">.</span><span class="nx">out</span><span class="p">:</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">ok</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">select</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">case</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="o">&lt;-</span><span class="nx">b</span><span class="p">.</span><span class="nx">errCh</span><span class="p">:</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span>
+<span class="w">            </span><span class="k">default</span><span class="p">:</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">service</span><span class="p">.</span><span class="nx">ErrNotConnected</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="nx">file</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaGet</span><span class="p">(</span><span class="s">&quot;binlog_file&quot;</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">posStr</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">msg</span><span class="p">.</span><span class="nx">MetaGet</span><span class="p">(</span><span class="s">&quot;binlog_pos&quot;</span><span class="p">)</span>
+
+<span class="w">        </span><span class="nx">ack</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">func</span><span class="p">(</span><span class="nx">_</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="c1">// nack: do not advance the offset</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="nx">p</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">ParseUint</span><span class="p">(</span><span class="nx">posStr</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">32</span><span class="p">)</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">savePos</span><span class="p">(</span><span class="nx">mysql</span><span class="p">.</span><span class="nx">Position</span><span class="p">{</span><span class="nx">Name</span><span class="p">:</span><span class="w"> </span><span class="nx">file</span><span class="p">,</span><span class="w"> </span><span class="nx">Pos</span><span class="p">:</span><span class="w"> </span><span class="nb">uint32</span><span class="p">(</span><span class="nx">p</span><span class="p">)})</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">msg</span><span class="p">,</span><span class="w"> </span><span class="nx">ack</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span>
+
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="o">&lt;-</span><span class="nx">b</span><span class="p">.</span><span class="nx">errCh</span><span class="p">:</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="o">&lt;-</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">Done</span><span class="p">():</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">Err</span><span class="p">()</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">binlogInput</span><span class="p">)</span><span class="w"> </span><span class="nx">Close</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">cancel</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">b</span><span class="p">.</span><span class="nx">cancel</span><span class="p">()</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">c</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">b</span><span class="p">.</span><span class="nx">c</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
+<span class="p">}</span>
+</pre></div>
+
+<p>Sedno jest w <code>AckFunc</code>. Bento woła ją dopiero wtedy, gdy wiadomość została dostarczona do wszystkich wyjść. Zapisujemy pozycję binloga wyłącznie w tym momencie, więc restart wznawia od ostatniego faktycznie dostarczonego zdarzenia. Przy nacku nie robimy nic — pozycja zostaje tam, gdzie była.</p>
+<p>Jedno zastrzeżenie, bo to pułapka: acki niekoniecznie przychodzą w kolejności wysyłki. Powyższy kod zapisuje ostatnią potwierdzoną pozycję, a nie <em>watermark</em> najniższej niepotwierdzonej. W produkcji trzymaj kopiec niepotwierdzonych pozycji i commituj dopiero ciągły prefiks. Semantyka i tak pozostaje at-least-once — wszystkie sinki muszą być idempotentne.</p>
+<h3 id="rejestracja">Rejestracja</h3>
+<div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">spec</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">service</span><span class="p">.</span><span class="nx">NewConfigSpec</span><span class="p">().</span>
+<span class="w">        </span><span class="nx">Summary</span><span class="p">(</span><span class="s">&quot;Reads MySQL row events from the binary log.&quot;</span><span class="p">).</span>
+<span class="w">        </span><span class="nx">Field</span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">NewStringField</span><span class="p">(</span><span class="s">&quot;addr&quot;</span><span class="p">).</span><span class="nx">Default</span><span class="p">(</span><span class="s">&quot;127.0.0.1:3306&quot;</span><span class="p">)).</span>
+<span class="w">        </span><span class="nx">Field</span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">NewStringField</span><span class="p">(</span><span class="s">&quot;user&quot;</span><span class="p">)).</span>
+<span class="w">        </span><span class="nx">Field</span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">NewStringField</span><span class="p">(</span><span class="s">&quot;password&quot;</span><span class="p">).</span><span class="nx">Secret</span><span class="p">()).</span>
+<span class="w">        </span><span class="nx">Field</span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">NewIntField</span><span class="p">(</span><span class="s">&quot;server_id&quot;</span><span class="p">).</span><span class="nx">Default</span><span class="p">(</span><span class="mi">1001</span><span class="p">)).</span>
+<span class="w">        </span><span class="nx">Field</span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">NewStringListField</span><span class="p">(</span><span class="s">&quot;include_tables&quot;</span><span class="p">).</span><span class="nx">Default</span><span class="p">([]</span><span class="kt">any</span><span class="p">{})).</span>
+<span class="w">        </span><span class="nx">Field</span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">NewStringField</span><span class="p">(</span><span class="s">&quot;pos_file&quot;</span><span class="p">).</span><span class="nx">Default</span><span class="p">(</span><span class="s">&quot;./binlog.pos&quot;</span><span class="p">))</span>
+
+<span class="w">    </span><span class="nx">ctor</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">func</span><span class="p">(</span><span class="nx">conf</span><span class="w"> </span><span class="o">*</span><span class="nx">service</span><span class="p">.</span><span class="nx">ParsedConfig</span><span class="p">,</span><span class="w"> </span><span class="nx">mgr</span><span class="w"> </span><span class="o">*</span><span class="nx">service</span><span class="p">.</span><span class="nx">Resources</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">service</span><span class="p">.</span><span class="nx">Input</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">cfg</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">canal</span><span class="p">.</span><span class="nx">NewDefaultConfig</span><span class="p">()</span>
+<span class="w">        </span><span class="c1">// ... read fields into cfg ...</span>
+<span class="w">        </span><span class="nx">cfg</span><span class="p">.</span><span class="nx">Dump</span><span class="p">.</span><span class="nx">ExecutionPath</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w"> </span><span class="c1">// binlog only, no mysqldump snapshot</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">binlogInput</span><span class="p">{</span><span class="nx">cfg</span><span class="p">:</span><span class="w"> </span><span class="nx">cfg</span><span class="p">,</span><span class="w"> </span><span class="nx">posFile</span><span class="p">:</span><span class="w"> </span><span class="nx">posFile</span><span class="p">},</span><span class="w"> </span><span class="kc">nil</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nx">service</span><span class="p">.</span><span class="nx">RegisterInput</span><span class="p">(</span><span class="s">&quot;mysql_binlog&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">spec</span><span class="p">,</span><span class="w"> </span><span class="nx">ctor</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">service</span><span class="p">.</span><span class="nx">RunCLI</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">())</span>
+<span class="p">}</span>
+</pre></div>
+
+<p>Plus pusty import <code>_ &quot;github.com/warpstreamlabs/bento/public/components/all&quot;</code>, żeby wciągnąć wszystkie standardowe komponenty. Od tego momentu <code>mysql_binlog</code> jest normalnym inputem, równoprawnym z <code>kafka</code> czy <code>file</code>, z walidacją konfiguracji i dokumentacją generowaną z <code>ConfigSpec</code>.</p>
+<h2 id="4-rozrzucanie-jednego-strumienia-na-wiele-sinkow">4. Rozrzucanie jednego strumienia na wiele sinków</h2>
+<p>I tu Bento odpłaca się za całą tę robotę, bo routing to już tylko YAML.</p>
+<p>Są dwa wzorce i mylenie ich to najczęstszy błąd.</p>
+<p><strong><code>switch</code></strong> — routing rozłączny. Sprawdzane po kolei, wygrywa pierwszy pasujący <code>check</code>, wiadomość trafia dokładnie w jedno miejsce. Dobry do dispatchu po typie.</p>
+<p><strong><code>broker</code> z <code>pattern: fan_out</code></strong> — każde wyjście dostaje <strong>kopię</strong> każdej wiadomości i filtruje sobie samo. Filtry mogą się dowolnie nakładać. Tego chcemy przy routerze CDC, bo S3 ma archiwizować również to, co poszło na Kafkę.</p>
+<div class="highlight"><pre><span></span><span class="nt">input</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">mysql_binlog</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">addr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1:3306</span>
+<span class="w">    </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">repl</span>
+<span class="w">    </span><span class="nt">password</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;${MYSQL_REPL_PASSWORD}&quot;</span>
+<span class="w">    </span><span class="nt">server_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1001</span>
+<span class="w">    </span><span class="nt">include_tables</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="s">&quot;shop\\..*&quot;</span><span class="w"> </span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">pos_file</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/var/lib/binlog-router/binlog.pos</span>
+
+<span class="nt">output</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">broker</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fan_out</span>
+<span class="w">    </span><span class="nt">outputs</span><span class="p">:</span>
+<span class="w">      </span><span class="c1"># 1. Kafka — tylko zamówienia.</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">processors</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">mapping</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">root = if meta(&quot;table&quot;) != &quot;orders&quot; { deleted() }</span>
+<span class="w">        </span><span class="nt">kafka</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">addresses</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="s">&quot;localhost:9092&quot;</span><span class="w"> </span><span class="p p-Indicator">]</span>
+<span class="w">          </span><span class="nt">topic</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">orders-cdc</span>
+<span class="w">          </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${! json(&quot;after.id&quot;) }</span>
+
+<span class="w">      </span><span class="c1"># 2. Audyt — tylko transakcje powyżej progu, bez usunięć.</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">processors</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">mapping</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">              </span><span class="no">root = if meta(&quot;action&quot;) == &quot;delete&quot; { deleted() }</span>
+<span class="w">              </span><span class="no">root = if this.after.amount.or(0) &lt; 1000 { deleted() }</span>
+<span class="w">        </span><span class="nt">http_client</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://audit.internal/events</span>
+<span class="w">          </span><span class="nt">verb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">POST</span>
+
+<span class="w">      </span><span class="c1"># 3. Archiwum — wszystko, co ze schematu shop.</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">processors</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">mapping</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">root = if meta(&quot;db&quot;) != &quot;shop&quot; { deleted() }</span>
+<span class="w">        </span><span class="nt">aws_s3</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">bucket</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc-archive</span>
+<span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${!meta(&quot;table&quot;)}/${!timestamp_unix()}-${!uuid_v4()}.json</span>
+</pre></div>
+
+<p>Procesory zagnieżdżone pod wyjściem działają tylko na kopii tego wyjścia, więc każdy sink może też przekształcić payload pod swój format — Kafka dostaje pełnego JSON-a, audyt spłaszczony rekord, S3 surowy event.</p>
+<h3 id="co-trzeba-wiedziec-o-fan-out">Co trzeba wiedzieć o fan_out</h3>
+<p>Potwierdzenie przychodzi dopiero, gdy <strong>wszystkie</strong> wyjścia potwierdzą zapis. To dokładnie ta własność, która sprawia, że zapis pozycji binloga w <code>AckFunc</code> jest bezpieczny — nie przesuniemy offsetu, dopóki event nie wyląduje wszędzie.</p>
+<p>Rewers tego medalu: jeden padnięty sink blokuje cały router i wymusza retry także na tych, które zapisały poprawnie. Stąd dwie decyzje projektowe:</p>
+<ul><li>daj każdemu wyjściu własną politykę <code>retry</code> i kolejkę martwych listów, żeby chwilowo niedostępny endpoint HTTP nie zatrzymywał Kafki;</li><li>jeśli zależy ci na kolejności prób, użyj <code>fan_out_sequential</code>.</li></ul>
+<p>Przy wolnych albo kapryśnych sinkach wstaw <code>buffer</code> — Bento ma bufor na dysku — ale świadomie: bufor przesuwa moment acku, więc rozluźnia gwarancję, za którą płacimy tym całym mechanizmem pozycji.</p>
+<h3 id="czego-nie-da-sie-obejsc">Czego nie da się obejść</h3>
+<p>Router jest z definicji <strong>jednoprocesowy</strong>. Jeden czytnik na jeden <code>server_id</code>, inaczej tracisz kolejność i dublujesz zdarzenia. Równoległość zaczyna się dopiero za Bento — partycje Kafki, workerzy po stronie konsumenta. Skalowanie poziome samego czytnika binloga to nie jest problem, który rozwiążesz konfiguracją.</p>
+<h2 id="podsumowanie">Podsumowanie</h2>
+<p>Całość to jakieś 200 linii Go i kilkanaście linii YAML-a. <code>go-mysql</code> daje wiarygodny strumień zmian prosto z protokołu replikacji, Bento daje routing, retry, backpressure i sto gotowych wyjść, a własny input plugin to po prostu adapter między push-owym handlerem canala a pull-owym <code>Read</code>.</p>
+<p>Dwie rzeczy, na których ten projekt stoi albo się przewraca: utrwalanie pozycji binloga dokładnie w momencie acku i idempotentność sinków. Reszta to konfiguracja.</p>
+</main>
+<footer>
+  Kod w artykule: <a href="https://github.com/go-mysql-org/go-mysql">go-mysql-org/go-mysql</a>
+  i <a href="https://github.com/warpstreamlabs/bento">warpstreamlabs/bento</a>.
+</footer>
+</div>
+<script>
+(function () {
+  var root = document.documentElement;
+  var saved = localStorage.getItem("theme");
+  if (saved) root.setAttribute("data-theme", saved);
+  document.getElementById("theme").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") === "dark" ||
+      (!root.getAttribute("data-theme") &&
+       window.matchMedia("(prefers-color-scheme: dark)").matches);
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
+  });
+})();
+</script>
+</body>
+</html>
